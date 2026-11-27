@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rpi-gpio-sim"
+version = "0.1.0"
+description = "RPi.GPIO compatibility library for the local Raspberry Pi simulator"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["RPi", "rpi_sim_client"]
+package-dir = {RPi = "compat/RPi"}

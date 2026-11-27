@@ -1,0 +1,120 @@
+QMainWindow, QDialog {
+    background: #111826;
+}
+QWidget {
+    color: #e5edf9;
+    font-size: 13px;
+}
+QLabel#title {
+    font-size: 28px;
+    font-weight: 700;
+}
+QLabel#sectionTitle, QLabel#componentName {
+    font-size: 15px;
+    font-weight: 650;
+}
+QLabel#muted, QLabel#empty {
+    color: #a4b1c6;
+}
+QLabel#empty {
+    min-height: 95px;
+}
+QLabel#runStatus, QLabel#componentState {
+    font-weight: 650;
+}
+QFrame#scriptBar, QFrame#panel, QFrame#consolePanel {
+    background: #182233;
+    border: 1px solid #2c394e;
+    border-radius: 10px;
+}
+QFrame#componentCard {
+    background: #202d42;
+    border: 1px solid #35455e;
+    border-radius: 9px;
+}
+QScrollArea, QScrollArea > QWidget > QWidget {
+    background: #182233;
+}
+QPushButton, QToolButton, QComboBox {
+    background: #27364d;
+    border: 1px solid #3c4b62;
+    border-radius: 6px;
+    min-height: 20px;
+    padding: 5px 10px;
+    font-weight: 600;
+}
+QPushButton:hover, QToolButton:hover, QComboBox:hover {
+    background: #34465f;
+    border-color: #667b98;
+}
+QPushButton:checked {
+    background: #344969;
+    border-color: #819de1;
+}
+QPushButton:disabled, QToolButton:disabled, QComboBox:disabled {
+    background: #1c2738;
+    border-color: #334055;
+    color: #8996aa;
+}
+QPushButton#primary:enabled {
+    background: #85e1b6;
+    border-color: #85e1b6;
+    color: #123128;
+    min-width: 42px;
+}
+QPushButton#primary:hover {
+    background: #abefce;
+}
+QToolButton#componentMenu {
+    background: transparent;
+    border-color: transparent;
+    color: #b5c4da;
+    min-width: 23px;
+    padding: 1px 3px;
+    font-size: 18px;
+}
+QToolButton#componentMenu:hover {
+    background: #33445d;
+}
+QToolButton#componentMenu::menu-indicator {
+    image: none;
+}
+QToolButton::menu-indicator {
+    subcontrol-position: right center;
+    subcontrol-origin: padding;
+}
+QToolButton {
+    padding-right: 18px;
+}
+QLineEdit, QPlainTextEdit {
+    background: #111a2a;
+    border: 1px solid #35455e;
+    border-radius: 6px;
+    padding: 6px 8px;
+    selection-background-color: #465e90;
+}
+QLineEdit:focus, QPlainTextEdit:focus, QPushButton:focus, QToolButton:focus, QComboBox:focus {
+    border-color: #88a6f0;
+}
+QLineEdit:disabled {
+    color: #9ca9bf;
+}
+QPlainTextEdit#console {
+    font-family: "Menlo", "Consolas", "DejaVu Sans Mono", monospace;
+    font-size: 12px;
+}
+QMenu, QComboBox QAbstractItemView {
+    background: #202d42;
+    border: 1px solid #435574;
+    selection-background-color: #384e70;
+}
+QMenu::item {
+    padding: 7px 20px;
+}
+QMenu::item:selected {
+    background: #384e70;
+}
+QSplitter::handle {
+    background: transparent;
+    width: 12px;
+}

@@ -46,3 +46,13 @@ Keep the simulator open with the demo layout loaded. Its **Motion light** is alr
 The `rpi-gpio-sim` package provides the `RPi.GPIO` import without a Qt dependency. Install it in a virtual environment for simulation on a PC. Use the hardware library in the Python environment on your Raspberry Pi.
 
 The simulator shows its local address in the header and marks an active terminal or IDE connection as **External script**. Scripts use a persistent TCP connection to `127.0.0.1:8765` by default. Set `RPI_SIM_PORT` to the same value in both environments to use another port. One script controls the board at a time. Disconnecting clears the script's GPIO configuration and leaves the component layout in place.
+
+## Development summary
+
+The project started with a goal of running existing Raspberry Pi GPIO exercises locally on macOS, Windows, and Linux. The Python and PySide6 desktop app uses direct pin assignment and supports multiple virtual LEDs, push buttons, and PIR sensors on one board. It can save component layouts and run existing scripts with an interactive console.
+
+The next step was to support scripts launched from a terminal or IDE. The installable `rpi-gpio-sim` library keeps the original `RPi.GPIO` import and exchanges newline-delimited JSON with the desktop app over one persistent localhost TCP connection. The simulator acknowledges GPIO commands and pushes sensor edge events over the same connection. Both launch paths share one board model. A separate HTTP API was discussed and deferred.
+
+The macOS checks ran unchanged LED, button, PIR, and BOARD-numbered blink exercises. They also verified simultaneous components, callbacks that make GPIO calls over TCP, and pin cleanup after a disconnect. In a loopback benchmark of 1,000 `GPIO.input()` calls, the median round-trip latency was 53 µs and the 95th percentile was 122 µs.
+
+The standalone [LED example](examples/led.py) was copied unchanged from the original exercise. The project was published on GitHub with `master` as the default branch. [Public repository](https://github.com/bandjeo/rpi-sim)

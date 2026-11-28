@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "lcd",
+      "kind": "lcd",
+      "name": "LCD1602",
+      "bus": 1,
+      "address": 39
+    }
+  ]
+}

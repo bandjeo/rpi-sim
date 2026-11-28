@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "led",
+      "kind": "led",
+      "pin": 18,
+      "name": "LED",
+      "active_low": false
+    }
+  ]
+}

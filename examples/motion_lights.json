@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "motion-light",
+      "kind": "led",
+      "pin": 18,
+      "name": "Motion light",
+      "active_low": false
+    },
+    {
+      "id": "manual-light",
+      "kind": "led",
+      "pin": 23,
+      "name": "Manual light",
+      "active_low": false
+    },
+    {
+      "id": "button",
+      "kind": "button",
+      "pin": 24,
+      "name": "Push button",
+      "active_low": false
+    },
+    {
+      "id": "pir",
+      "kind": "pir",
+      "pin": 17,
+      "name": "PIR sensor",
+      "active_low": false
+    }
+  ]
+}

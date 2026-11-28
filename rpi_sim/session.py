@@ -48,7 +48,11 @@ class BoardSession:
             return failure(request_id, f"Unknown GPIO operation {operation!r}")
         try:
             return result(request_id, command(*args))
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
+        except OSError as error:
+            reply = failure(request_id, error.strerror or str(error), "OSError")
+            reply["errno"] = error.errno
+            return reply
+        except (RuntimeError, TypeError, ValueError) as error:
             return failure(request_id, str(error), type(error).__name__)
 
     def send_edge(self, channel, registration):

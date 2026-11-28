@@ -86,18 +86,24 @@ QToolButton::menu-indicator {
 QToolButton {
     padding-right: 18px;
 }
-QLineEdit, QPlainTextEdit {
+QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {
     background: #111a2a;
     border: 1px solid #35455e;
     border-radius: 6px;
     padding: 6px 8px;
     selection-background-color: #465e90;
 }
-QLineEdit:focus, QPlainTextEdit:focus, QPushButton:focus, QToolButton:focus, QComboBox:focus {
+QLineEdit:focus, QPlainTextEdit:focus, QPushButton:focus, QToolButton:focus, QComboBox:focus,
+QSpinBox:focus, QDoubleSpinBox:focus {
     border-color: #88a6f0;
 }
 QLineEdit:disabled {
     color: #9ca9bf;
+}
+QSpinBox QLineEdit, QDoubleSpinBox QLineEdit {
+    background: transparent;
+    border: none;
+    padding: 0;
 }
 QPlainTextEdit#console {
     font-family: "Menlo", "Consolas", "DejaVu Sans Mono", monospace;

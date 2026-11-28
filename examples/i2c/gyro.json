@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "mpu6050",
+      "kind": "mpu6050",
+      "name": "MPU6050",
+      "bus": 1,
+      "address": 104
+    }
+  ]
+}

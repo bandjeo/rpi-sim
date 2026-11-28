@@ -15,7 +15,8 @@ from PySide6.QtWidgets import (
 from rpi_sim_client.gpio import BCM_TO_BOARD
 from rpi_sim_client.protocol import HOST
 
-from .board import COMPONENT_NAMES, Board, Component, layout_json, load_layout
+from .audio import BuzzerAudio
+from .board import COMPONENT_NAMES, I2C_ADDRESSES, Board, Component, layout_json, load_layout
 from .process import ScriptProcess
 from .server import GPIOServer
 from .session import BoardSession
@@ -40,7 +41,12 @@ class SimulatorWindow(QMainWindow):
         self.layout_path = None
         self.cards = {}
         self.pulse_timers = {}
-        self.board = Board(self._update_pin, self._send_edge)
+        self.i2c_updates = set()
+        self.i2c_repaint = QTimer(self, singleShot=True, interval=16)
+        self.i2c_repaint.timeout.connect(self._refresh_i2c)
+        self.audio = BuzzerAudio(self)
+        self.audio.failed.connect(lambda message: self._append_console(f"\n[Buzzer: {message}]\n"))
+        self.board = Board(self._update_pin, self._send_edge, self._update_i2c)
         self.session = BoardSession(self.board)
         self.runner = ScriptProcess(self.session, self)
         self.runner.console_output.connect(self._append_console)
@@ -208,9 +214,11 @@ class SimulatorWindow(QMainWindow):
             card.edit.connect(self._edit_component)
             card.remove.connect(self._remove_component)
             card.interact.connect(self._interact)
-            card.show_state(self.board.component_active(component))
+            card.motion_changed.connect(self.board.set_motion)
+            card.refresh(self.board)
             card.menu_button.setEnabled(not self.session.busy)
-            self.cards[component.pin] = card
+            key = component.id if component.kind in I2C_ADDRESSES else component.pin
+            self.cards[key] = card
             self.grid.addWidget(card, index // 2, index % 2)
         if not self.cards:
             empty = QLabel("Add a component or load the demo.")
@@ -218,17 +226,24 @@ class SimulatorWindow(QMainWindow):
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.grid.addWidget(empty, 0, 0, 1, 2)
         self.component_count.setText(str(len(self.cards)))
-        self.add_button.setEnabled(not self.session.busy and len(self.cards) < len(BCM_TO_BOARD))
+        self.add_button.setEnabled(not self.session.busy)
+        self._update_audio()
+
+    def _available_pins(self, except_id=None):
+        return set(BCM_TO_BOARD) - {
+            pin for item in self.board.components.values() if item.id != except_id for pin in item.pins
+        }
 
     def _edit_component(self, component_id=None):
         previous = self.board.components.get(component_id)
-        free = set(BCM_TO_BOARD) - set(self.cards)
-        if previous:
-            free.add(previous.pin)
-        dialog = ComponentDialog(free, previous, self)
+        used_addresses = {
+            (item.bus, item.address) for item in self.board.components.values()
+            if item.id != component_id and item.kind in I2C_ADDRESSES
+        }
+        dialog = ComponentDialog(self._available_pins(component_id), previous, self, used_addresses=used_addresses)
         if dialog.exec() != QDialog.DialogCode.Accepted or self.session.busy:
             return
-        kind, pin, name, active_low = dialog.values()
+        kind, pin, name, active_low, green_pin, blue_pin, bus, address = dialog.values()
         if not name:
             label = COMPONENT_NAMES[kind]
             labels = {item.name for item in self.board.components.values() if item != previous}
@@ -237,7 +252,7 @@ class SimulatorWindow(QMainWindow):
             while name in labels:
                 name = f"{label} {number}"
                 number += 1
-        component = Component(component_id or uuid4().hex, kind, pin, name, active_low)
+        component = Component(component_id or uuid4().hex, kind, pin, name, active_low, green_pin, blue_pin, bus, address)
         self.board.put_component(component)
         self._redraw_components()
 
@@ -264,9 +279,29 @@ class SimulatorWindow(QMainWindow):
             timer.start()
 
     def _update_pin(self, pin):
-        card = self.cards.get(pin)
+        component = self.board.component_at(pin)
+        card = self.cards.get(component.pin) if component else None
         if card:
-            card.show_state(self.board.component_active(card.component))
+            card.refresh(self.board)
+        if component and component.kind == "buzzer":
+            self._update_audio()
+
+    def _update_audio(self):
+        self.audio.set_tones({
+            item.id: tone for item in self.board.components.values() if item.kind == "buzzer"
+            if (tone := self.board.buzzer_tone(item.pin)) is not None
+        })
+
+    def _update_i2c(self, component_id):
+        self.i2c_updates.add(component_id)
+        if not self.i2c_repaint.isActive():
+            self.i2c_repaint.start()
+
+    def _refresh_i2c(self):
+        for component_id in self.i2c_updates:
+            if card := self.cards.get(component_id):
+                card.refresh(self.board)
+        self.i2c_updates.clear()
 
     def _send_edge(self, channel, registration):
         self.session.send_edge(channel, registration)
@@ -337,13 +372,15 @@ class SimulatorWindow(QMainWindow):
 
     def _show_run_status(self, status):
         idle = status == "Idle"
+        if idle:
+            self.audio.stop()
         self.run_status.setText(status)
         self.run_status.setStyleSheet(
             "color: #7fe4b2;" if status in ("Running", "External script") else "color: #a1afc4;"
         )
         for widget in (self.run_button, self.browse_button, self.script, self.python_button, self.demo_button, self.layout_button):
             widget.setEnabled(idle)
-        self.add_button.setEnabled(idle and len(self.cards) < len(BCM_TO_BOARD))
+        self.add_button.setEnabled(idle)
         for card in self.cards.values():
             card.menu_button.setEnabled(idle)
         for widget in (self.stop_button, self.console_input, self.send_button):
@@ -366,6 +403,7 @@ class SimulatorWindow(QMainWindow):
             self.console_input.clear()
 
     def closeEvent(self, event):
+        self.audio.stop()
         self.server.close()
         self.runner.close()
         super().closeEvent(event)

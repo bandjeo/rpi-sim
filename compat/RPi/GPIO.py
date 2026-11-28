@@ -5,6 +5,7 @@ import sys
 import threading
 import traceback
 import warnings
+from contextlib import suppress
 
 from rpi_sim_client import bridge
 from rpi_sim_client.gpio import BCM, BOARD, BOTH, FALLING, HIGH, IN, LOW, OUT, PUD_DOWN, PUD_OFF, PUD_UP, RISING
@@ -21,7 +22,7 @@ def _request(operation, *args):
     global _connection
     with _connection_lock:
         if _connection is None:
-            _connection = bridge.pipe_connection or bridge.connect_tcp()
+            _connection = bridge.get_connection()
             threading.Thread(
                 target=_dispatch_edges, args=(_connection,), name="GPIO callbacks", daemon=True
             ).start()
@@ -99,6 +100,30 @@ def remove_event_detect(channel):
 
 def event_detected(channel):
     return _request("event_detected", channel)
+
+
+class PWM:
+    def __init__(self, channel, frequency):
+        self._channel = channel
+        self._registration = None
+        self._registration = _request("pwm_create", channel, frequency)
+
+    def start(self, duty_cycle):
+        _request("pwm_start", self._channel, self._registration, duty_cycle)
+
+    def ChangeDutyCycle(self, duty_cycle):
+        _request("pwm_duty", self._channel, self._registration, duty_cycle)
+
+    def ChangeFrequency(self, frequency):
+        _request("pwm_frequency", self._channel, self._registration, frequency)
+
+    def stop(self):
+        _request("pwm_stop", self._channel, self._registration)
+
+    def __del__(self):
+        if self._registration is not None and not sys.is_finalizing():
+            with suppress(OSError, RuntimeError, TypeError, ValueError):
+                _connection.notify("pwm_release", self._channel, self._registration)
 
 
 def _dispatch_edges(connection):

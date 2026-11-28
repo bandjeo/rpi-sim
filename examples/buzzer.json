@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "buzzer",
+      "kind": "buzzer",
+      "pin": 17,
+      "name": "Buzzer",
+      "active_low": false
+    }
+  ]
+}

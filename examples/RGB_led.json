@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "rgb",
+      "kind": "rgb",
+      "pin": 12,
+      "name": "RGB LED",
+      "active_low": false,
+      "green_pin": 13,
+      "blue_pin": 19
+    }
+  ]
+}

@@ -65,7 +65,7 @@ class Bridge:
         self.timeout = timeout
         self.events = queue.Queue()
         self.pending = {}
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.connected = True
         self.ids = itertools.count(1)
         threading.Thread(target=self._read_messages, name="simulator connection", daemon=True).start()
@@ -98,9 +98,17 @@ class Bridge:
         if message is None:
             raise RuntimeError("The simulator has disconnected")
         if "error" in message:
+            if message["type"] == "OSError":
+                raise OSError(message.get("errno"), message["error"])
             error_type = {"TypeError": TypeError, "ValueError": ValueError}.get(message["type"], RuntimeError)
             raise error_type(message["error"])
         return message.get("result")
+
+    def notify(self, operation, *args):
+        """Send a GPIO command from a finalizer without waiting for its reply."""
+        with self.lock:
+            if self.connected:
+                self.write(encode_message({"id": next(self.ids), "op": operation, "args": args}))
 
     def _read_messages(self):
         reader = MessageReader()
@@ -144,6 +152,18 @@ class Bridge:
 
 
 pipe_connection = None
+_tcp_connection = None
+_connection_lock = threading.Lock()
+
+
+def get_connection():
+    global _tcp_connection
+    if pipe_connection is not None:
+        return pipe_connection
+    with _connection_lock:
+        if _tcp_connection is None:
+            _tcp_connection = connect_tcp()
+        return _tcp_connection
 
 
 def connect_pipes(input_fd, writer):

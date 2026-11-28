@@ -9,16 +9,21 @@ from itertools import count
 from pathlib import Path
 
 from rpi_sim_client import gpio
+from rpi_sim_client.pulses import PulseFrame
 
+from .gpio_devices import DHT11, Infrared, SevenSegment, Ultrasonic
 from .i2c import I2CBus
 from .i2c_devices import LCD1602, MPU6050
 
 COMPONENT_NAMES = {
     "led": "LED", "button": "Push button", "pir": "PIR sensor",
     "buzzer": "Buzzer", "rgb": "RGB LED", "lcd": "LCD1602", "mpu6050": "MPU6050",
+    "seven_segment": "4-digit 7-segment display", "dht11": "DHT11",
+    "ultrasonic": "Ultrasonic sensor", "ir": "Infrared receiver",
 }
 I2C_DEFAULTS = {"lcd": 0x27, "mpu6050": 0x68}
 I2C_ADDRESSES = {"lcd": (*range(0x20, 0x28), *range(0x38, 0x40)), "mpu6050": (0x68, 0x69)}
+GPIO_DEVICES = {"seven_segment": SevenSegment, "dht11": DHT11, "ultrasonic": Ultrasonic, "ir": Infrared}
 
 
 @dataclass(frozen=True)
@@ -32,13 +37,27 @@ class Component:
     blue_pin: int | None = None
     bus: int | None = None
     address: int | None = None
+    echo_pin: int | None = None
+    segment_pins: tuple | None = None
+    digit_pins: tuple | None = None
+    digit_active_low: bool | None = None
+
+    def __post_init__(self):
+        for field in ("segment_pins", "digit_pins"):
+            value = getattr(self, field)
+            if isinstance(value, list):
+                object.__setattr__(self, field, tuple(value))
 
     @property
     def pins(self):
         if self.kind in I2C_ADDRESSES:
             return ()
+        if self.kind == "seven_segment":
+            return (*self.segment_pins, *self.digit_pins)
         if self.kind == "rgb":
             return self.pin, self.green_pin, self.blue_pin
+        if self.kind == "ultrasonic":
+            return self.pin, self.echo_pin
         return (self.pin,)
 
 
@@ -75,7 +94,7 @@ class Edge:
 
 
 class Board:
-    def __init__(self, pin_changed, edge_detected, i2c_changed=None):
+    def __init__(self, pin_changed, edge_detected, i2c_changed=None, pulse_sent=None, *, clock_ns=time.monotonic_ns):
         self.pin_changed = pin_changed
         self.edge_detected = edge_detected
         self.components = {}
@@ -83,6 +102,10 @@ class Board:
         self.mode = None
         self.pins = {bcm: Pin() for bcm in gpio.BCM_TO_BOARD}
         self.edges = {}
+        self.clock_ns = clock_ns
+        self.pulse_sent = pulse_sent
+        self.pulse_frames = {}
+        self.gpio_devices = {}
         self.i2c_changed = i2c_changed
         self.i2c_buses = {1: I2CBus()}
         self.pwm_registrations = count(1)
@@ -106,9 +129,13 @@ class Board:
         validate_components(components)
         self.components = {component.id: component for component in components}
         self.input_active = {}
+        self.pulse_frames.clear()
+        self.gpio_devices.clear()
         self.i2c_buses = {1: I2CBus()}
         for component in components:
             self._attach_device(component)
+            if component.kind in GPIO_DEVICES:
+                self.gpio_devices[component.id] = GPIO_DEVICES[component.kind]()
 
     def put_component(self, component):
         existing = [item for item in self.components.values() if item.id != component.id]
@@ -124,16 +151,25 @@ class Board:
         if previous and previous.pins != component.pins:
             self.input_active.pop(component.id, None)
             for bcm in set(previous.pins) - set(component.pins):
-                self.pin_changed(bcm)
+                self.pulse_frames.pop(bcm, None)
+                self._notify_pin(bcm)
+        if component.kind in GPIO_DEVICES and (
+            previous is None or previous.kind != component.kind or previous.pins != component.pins
+        ):
+            self.gpio_devices[component.id] = GPIO_DEVICES[component.kind]()
+        elif component.kind not in GPIO_DEVICES:
+            self.gpio_devices.pop(component.id, None)
         for bcm in component.pins:
-            self.pin_changed(bcm)
+            self._notify_pin(bcm)
 
     def remove_component(self, component_id):
         component = self.components.pop(component_id)
         self.input_active.pop(component_id, None)
+        self.gpio_devices.pop(component_id, None)
         self._detach_device(component)
         for bcm in component.pins:
-            self.pin_changed(bcm)
+            self.pulse_frames.pop(bcm, None)
+            self._notify_pin(bcm)
 
     def component_at(self, bcm):
         return next((component for component in self.components.values() if bcm in component.pins), None)
@@ -170,6 +206,56 @@ class Board:
         device = self.i2c_device(self.components[component_id])
         device.acceleration, device.rotation = acceleration, rotation
 
+    def press_remote(self, component_id, key):
+        component = self.components[component_id]
+        device = self.gpio_devices[component_id]
+        pulses = device.press(key)
+        self._emit_pulses(component.pin, pulses, 200)
+        self.pin_changed(component.pin)
+
+    def _pulse_source(self, component, bcm):
+        if component and (
+            component.kind in ("dht11", "ir") or (component.kind == "ultrasonic" and component.echo_pin == bcm)
+        ):
+            return self.gpio_devices.get(component.id)
+        return None
+
+    def _emit_pulses(self, bcm, pulses, delay=0):
+        if self.pins[bcm].direction != gpio.IN:
+            return
+        self.pulse_frames[bcm] = PulseFrame(tuple(pulses), delay, self.clock_ns())
+        if self.pulse_sent:
+            self.pulse_sent(bcm, pulses, delay)
+
+    def _drive_device(self, component, bcm, level):
+        if component is None:
+            return
+        device = self.gpio_devices.get(component.id)
+        if isinstance(device, DHT11):
+            device.drive(level, self.clock_ns())
+        elif isinstance(device, Ultrasonic) and bcm == component.pin:
+            if pulses := device.drive(level, self.clock_ns()):
+                self._emit_pulses(component.echo_pin, pulses, 200)
+
+    def _notify_pin(self, bcm):
+        component = self.component_at(bcm)
+        if component and component.kind == "seven_segment":
+            device = self.gpio_devices[component.id]
+            segments = sum(
+                (1 << index) for index, pin in enumerate(component.segment_pins)
+                if self.pins[pin].direction == gpio.OUT and self.pins[pin].output != component.active_low
+            )
+            digit_on = gpio.HIGH if component.digit_active_low is False else gpio.LOW
+            selected = [
+                self.pins[pin].direction == gpio.OUT and self.pins[pin].output == digit_on
+                for pin in component.digit_pins
+            ]
+            device.observe(segments, selected, self.clock_ns())
+        self.pin_changed(bcm)
+
+    def display_segments(self, component_id):
+        return self.gpio_devices[component_id].visible(self.clock_ns())
+
     def set_input(self, component_id, active):
         component = self.components.get(component_id)
         if component is None or component.kind not in ("button", "pir"):
@@ -191,6 +277,10 @@ class Board:
             return pin.output
         component = self.component_at(bcm)
         if component:
+            source = self._pulse_source(component, bcm)
+            if source is not None:
+                frame = self.pulse_frames.get(bcm)
+                return frame.level(self.clock_ns(), source.idle) if frame else source.idle
             active = self.input_active.get(component.id, False)
             if component.kind == "pir":
                 return gpio.HIGH if active else gpio.LOW
@@ -255,8 +345,13 @@ class Board:
             raise ValueError("Pull resistors apply to GPIO inputs")
         if initial is not None and (direction != gpio.OUT or initial not in (gpio.LOW, gpio.HIGH)):
             raise ValueError("Initial level must be GPIO.LOW or GPIO.HIGH on an output")
-        for bcm in self._channels(channels):
+        sources = {}
+        selected = self._channels(channels)
+        channel_list = channels if isinstance(channels, list) else [channels]
+        for channel, bcm in zip(channel_list, selected):
             pin = self.pins[bcm]
+            previous = pin.direction
+            component = self.component_at(bcm)
             if direction == gpio.OUT:
                 if initial is not None:
                     pin.output = int(initial)
@@ -265,7 +360,16 @@ class Board:
                 pin.pwm = None
             pin.direction = direction
             pin.pull = pull
-            self.pin_changed(bcm)
+            if direction == gpio.OUT:
+                self.pulse_frames.pop(bcm, None)
+                self._drive_device(component, bcm, pin.output)
+            elif (source := self._pulse_source(component, bcm)) is not None:
+                sources[str(channel)] = [bcm, source.idle]
+                if previous == gpio.OUT and isinstance(source, DHT11):
+                    if pulses := source.release(self.clock_ns()):
+                        self._emit_pulses(bcm, pulses)
+            self._notify_pin(bcm)
+        return sources
 
     def input(self, channel):
         bcm = self._pin(channel)
@@ -287,8 +391,10 @@ class Board:
             if pin.output != value:
                 pin.output = int(value)
                 changed.add(bcm)
+        for bcm, value in zip(pins, values):
+            self._drive_device(self.component_at(bcm), bcm, int(value))
         for bcm in changed:
-            self.pin_changed(bcm)
+            self._notify_pin(bcm)
 
     def gpio_function(self, channel):
         direction = self.pins[self._pin(channel)].direction
@@ -357,9 +463,13 @@ class Board:
         cleaned = False
         for bcm in pins:
             self.edges.pop(bcm, None)
+            self.pulse_frames.pop(bcm, None)
             if self.pins[bcm].direction is not None:
                 self.pins[bcm] = Pin()
-                self.pin_changed(bcm)
+                component = self.component_at(bcm)
+                if component and component.kind in ("dht11", "ultrasonic"):
+                    self.gpio_devices[component.id].reset()
+                self._notify_pin(bcm)
                 cleaned = True
         return cleaned
 
@@ -433,6 +543,17 @@ def validate_components(components):
             raise ValueError("Unknown component type")
         if item.kind != "rgb" and (item.green_pin is not None or item.blue_pin is not None):
             raise ValueError("Extra color pins apply only to RGB LEDs")
+        if item.kind != "ultrasonic" and item.echo_pin is not None:
+            raise ValueError("The echo pin applies only to ultrasonic sensors")
+        if item.kind == "seven_segment":
+            if item.pin is not None or not isinstance(item.segment_pins, tuple) or len(item.segment_pins) != 8:
+                raise ValueError("Assign eight segment pins to the 7-segment display")
+            if not isinstance(item.digit_pins, tuple) or len(item.digit_pins) != 4:
+                raise ValueError("Assign four digit pins to the 7-segment display")
+            if item.digit_active_low is not None and type(item.digit_active_low) is not bool:
+                raise ValueError("Digit polarity must be boolean")
+        elif any(value is not None for value in (item.segment_pins, item.digit_pins, item.digit_active_low)):
+            raise ValueError("Segment and digit assignments apply only to 7-segment displays")
         if item.kind in I2C_ADDRESSES:
             if item.pin is not None or type(item.bus) is not int or not 0 <= item.bus <= 255:
                 raise ValueError("Choose a bus number between 0 and 255 for the I²C component")
@@ -452,13 +573,17 @@ def validate_components(components):
             pins.add(bcm)
         if not isinstance(item.name, str) or not item.name.strip() or len(item.name) > 60:
             raise ValueError("Component names must have between 1 and 60 characters")
-        if type(item.active_low) is not bool or (item.active_low and item.kind not in ("led", "rgb")):
-            raise ValueError("Active-low polarity is only configurable for LEDs")
+        if type(item.active_low) is not bool or (item.active_low and item.kind not in ("led", "rgb", "seven_segment")):
+            raise ValueError("Active-low polarity applies to LEDs and displays")
         ids.add(item.id)
 
 
 def load_layout(path):
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return parse_layout(Path(path).read_text(encoding="utf-8"))
+
+
+def parse_layout(contents):
+    data = json.loads(contents)
     if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("components"), list):
         raise ValueError("This file is not a supported component layout")
     try:

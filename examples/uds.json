@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "sonar",
+      "kind": "ultrasonic",
+      "pin": 4,
+      "name": "Ultrasonic sensor",
+      "active_low": false,
+      "echo_pin": 17
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # RPi Simulator
 
-Run Python GPIO and I²C exercises on a virtual Raspberry Pi board. Add LEDs, RGB LEDs, buzzers, push buttons, and PIR sensors by GPIO pin. Add LCD1602 displays and MPU6050 sensors by I²C bus and address.
+Run Python GPIO and I²C exercises on a virtual Raspberry Pi board. Assign GPIO pins to lights, buzzers, displays, buttons, and sensors. Add LCD1602 displays and MPU6050 sensors by I²C bus and address.
 
 ## Run
 
@@ -24,13 +24,15 @@ py -3 -m venv .venv
 
 ## Use the simulator
 
-1. Select **Run** to start the built-in demo. **Trigger motion** lights one LED for two seconds. **Press button** lights the other until you select **Release button**. Both can be active together.
+1. Select **Load demo**, then **Run** to start the built-in demo. **Trigger motion** lights one LED for two seconds. **Press button** lights the other until you select **Release button**. Both can be active together.
 2. For your own script, choose **Layout → New layout**, then add components and match their GPIO pins to your script. Each pin picker shows the BCM number and its physical header position. Save or reopen layouts from the **Layout** menu.
 3. Select **Browse** to open your script. Use **Python…** if the script needs packages from a different Python environment. Select **Run**. The console shows output and tracebacks, and **Send** enters a line into Python's `input()`.
 
+The simulator restores your last layout and selected script when you reopen it. Component changes are remembered even before you export a layout to JSON.
+
 A push button drives its pin low while held and releases it to the configured pull resistor. Configure a grounded button with `GPIO.PUD_UP` to get a high level on release. A PIR sensor drives high during motion and low when clear. LEDs default to lighting on a high output, with an active-low option in component settings.
 
-Scripts keep their `import RPi.GPIO as GPIO` import. The simulator supports `BCM` and `BOARD` numbering, setup, digital input and output, pulls, edge callbacks with debounce, `event_detected()`, PWM, and cleanup. `wait_for_edge()` and timing-sensitive sensor protocols are outside the current implementation.
+Scripts keep their `import RPi.GPIO as GPIO` import. The simulator supports `BCM` and `BOARD` numbering, setup, digital input and output, pulls, edge callbacks with debounce, `event_detected()`, PWM, and cleanup. Simulated DHT11, ultrasonic, and infrared sensors also support `GPIO.capture_pulses()`.
 
 ### Bundled examples
 
@@ -46,10 +48,18 @@ Choose **Layout → Open layout…** and open the example's JSON file. Then use 
 | [LCD1602 clock](examples/i2c/LCD1602.py) | [LCD1602.json](examples/i2c/LCD1602.json) | The 16×2 LCD at `0x27` shows the temperature and clock. On desktops without a CPU temperature file, the example uses 42 °C. |
 | [MPU6050 motion](examples/i2c/gyro.py) | [gyro.json](examples/i2c/gyro.json) | The driver initializes the sensor at `0x68` and reports acceleration and rotation. Change the six values on the sensor card while it runs. |
 | [Motion on the LCD](examples/i2c/motion_display.py) | [motion_display.json](examples/i2c/motion_display.json) | Both devices share bus 1, and the LCD displays the MPU6050's Z-axis readings. |
+| [4-digit clock](examples/4segment.py) | [4segment.json](examples/4segment.json) | The multiplexed 7-segment display shows the time. |
+| [DHT11](examples/dht/DHT11.py) | [DHT11.json](examples/dht/DHT11.json) | Change temperature and humidity on the card, then watch the next reading on GPIO 17. |
+| [Ultrasonic distance](examples/uds.py) | [uds.json](examples/uds.json) | Set the distance or select **No echo** to test a timeout. Trigger uses GPIO 4 and Echo uses GPIO 17. |
+| [Infrared remote](examples/ir_receiver.py) | [ir_receiver.json](examples/ir_receiver.json) | Press a key on the remote card and see the decoded key in the script console. The receiver uses GPIO 17. |
 
 Buzzers play through the system's default audio output. A digital HIGH plays a fixed tone, and short digital pulses are extended to a brief audible beep. PWM plays at the requested frequency when the duty cycle is between 0% and 100%. A 0% duty cycle is silent, and a 100% duty cycle behaves like a steady HIGH.
 
 RGB LEDs combine the digital or PWM brightness of their red, green, and blue channels and display the resulting hex color. Select active-low polarity for a common-anode RGB LED. Standard LEDs also show PWM brightness.
+
+The 4-digit display assigns eight segment lines (A–G and DP) and four digit select lines. Configure the two polarities separately. The clock example uses active-high segment lines and active-low digit select lines.
+
+DHT11, ultrasonic echo, and infrared waveforms can be sampled locally with `GPIO.input()`. Polling accuracy depends on how the desktop schedules Python. The bundled sensor examples use `GPIO.capture_pulses(pin, timeout=...)` when it is available to receive one complete frame as `(level, microseconds)` pairs. It returns `None` on timeout. The examples retain their polling paths for Raspberry Pi hardware.
 
 ## Run a script from your terminal or IDE
 
@@ -103,3 +113,7 @@ PWM support added duty-cycle and frequency control, buzzer playback through the 
 The I²C work added `smbus` and `smbus2` compatibility on the same connection as GPIO. The digital bus uses simulated nanosecond timing for transfers and SDA/SCL traces. It models 7-bit and 10-bit addressing, repeated starts, clock stretching, arbitration, and bus recovery. The LCD1602 and MPU6050 can share a bus, as shown in the bundled motion display example.
 
 On macOS, the supplied MPU6050 driver completed DMP initialization in about 1.3 seconds and reported motion at roughly 10 Hz. The LCD demo ran at both backpack addresses, and the installed client used I²C and GPIO together over TCP. [I²C examples](examples/i2c) · [Protocol and device tests](tests/test_i2c.py)
+
+The simulator added a multiplexed four-digit display, a DHT11 temperature and humidity sensor, an ultrasonic distance sensor with a no-echo mode, and an infrared receiver with an on-screen remote. Each component has a bundled exercise and layout. The timed sensor examples capture complete GPIO pulse trains, and the infrared example was verified over localhost TCP with the installed client. [Bundled examples](#bundled-examples) · [GPIO device tests](tests/test_gpio_devices.py)
+
+The app now restores the last layout and selected script on startup, including unsaved component edits and intentionally empty layouts. Restart tests verified that the session restores independently of any exported JSON layout.

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "ir",
+      "kind": "ir",
+      "pin": 17,
+      "name": "Infrared receiver",
+      "active_low": false
+    }
+  ]
+}

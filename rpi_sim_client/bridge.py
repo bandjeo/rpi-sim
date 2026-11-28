@@ -10,6 +10,7 @@ import threading
 from contextlib import suppress
 
 from .protocol import HOST, VERSION, MessageReader, ProtocolError, encode_message, get_port
+from .pulses import PulseInputs
 
 CONNECT_TIMEOUT = 3
 REQUEST_TIMEOUT = 5
@@ -64,6 +65,7 @@ class Bridge:
         self.console = console
         self.timeout = timeout
         self.events = queue.Queue()
+        self.pulses = PulseInputs()
         self.pending = {}
         self.lock = threading.RLock()
         self.connected = True
@@ -130,6 +132,7 @@ class Bridge:
                 reply.put_nowait(None)
             self.pending.clear()
         self.events.put(None)
+        self.pulses.close()
         if self.console is not None:
             self.console.lines.put(None)
         if self.close_transport is not None:
@@ -146,6 +149,8 @@ class Bridge:
             self.console.lines.put(message["text"] + "\n")
         elif kind == "edge":
             self.events.put((message["channel"], message["registration"]))
+        elif kind == "pulses":
+            self.pulses.deliver(message["pin"], message["pulses"], message["delay"])
         elif kind == "stop" and self.console is not None:
             _thread.interrupt_main()
             self.console.lines.put(None)

@@ -58,3 +58,7 @@ class BoardSession:
     def send_edge(self, channel, registration):
         if self._send is not None:
             self._send({"type": "edge", "channel": channel, "registration": registration})
+
+    def send_pulses(self, pin, pulses, delay):
+        if self._send is not None:
+            self._send({"type": "pulses", "pin": pin, "pulses": pulses, "delay": delay})

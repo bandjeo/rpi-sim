@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "display",
+      "kind": "seven_segment",
+      "name": "4-digit display",
+      "active_low": false,
+      "segment_pins": [
+        11,
+        4,
+        23,
+        8,
+        7,
+        10,
+        18,
+        25
+      ],
+      "digit_pins": [
+        22,
+        27,
+        17,
+        24
+      ],
+      "digit_active_low": true
+    }
+  ]
+}

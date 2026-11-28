@@ -16,6 +16,7 @@ _registrations = {}
 _registration_ids = itertools.count(1)
 _callback_lock = threading.RLock()
 _warnings_enabled = True
+_pulse_pins = {}
 
 
 def _request(operation, *args):
@@ -44,14 +45,33 @@ def setwarnings(enabled):
 
 def setup(channel, direction, pull_up_down=PUD_OFF, initial=None):
     with _callback_lock:
-        _request("setup", channel, direction, pull_up_down, initial)
-        if direction == OUT:
-            for item in channel if isinstance(channel, (tuple, list)) else (channel,):
+        sources = _request("setup", channel, direction, pull_up_down, initial) or {}
+        for item in channel if isinstance(channel, (tuple, list)) else (channel,):
+            source = sources.get(str(item))
+            previous = _pulse_pins.pop(item, None)
+            if source is not None:
+                _pulse_pins[item] = source
+            elif previous is not None:
+                _connection.pulses.clear(previous[0])
+            if direction == OUT:
                 _registrations.pop(item, None)
 
 
 def input(channel):
+    source = _pulse_pins.get(channel) if type(channel) is int else None
+    if source is not None:
+        return _connection.pulses.sample(*source)
     return _request("input", channel)
+
+
+def capture_pulses(channel, *, timeout=0.1):
+    """Capture one simulated sensor frame as (level, microseconds) pairs."""
+    source = _pulse_pins.get(channel) if type(channel) is int else None
+    if source is None:
+        raise RuntimeError("Set up a simulated pulse sensor on this GPIO input first")
+    if not isinstance(timeout, (int, float)) or not 0 <= timeout <= 60:
+        raise ValueError("Pulse capture timeout must be between 0 and 60 seconds")
+    return _connection.pulses.capture(source[0], timeout)
 
 
 def output(channel, value):
@@ -63,9 +83,15 @@ def cleanup(channel=None):
         cleaned = _request("cleanup", channel)
         if channel is None:
             _registrations.clear()
+            for pin, _ in _pulse_pins.values():
+                _connection.pulses.clear(pin)
+            _pulse_pins.clear()
         else:
             for item in channel if isinstance(channel, (tuple, list)) else (channel,):
                 _registrations.pop(item, None)
+                source = _pulse_pins.pop(item, None)
+                if source is not None:
+                    _connection.pulses.clear(source[0])
     if not cleaned and _warnings_enabled:
         warnings.warn("No channels have been set up yet; use GPIO.setup() first", RuntimeWarning, stacklevel=2)
 

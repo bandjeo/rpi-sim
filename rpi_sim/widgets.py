@@ -1,15 +1,16 @@
 """Controls for configuring and interacting with virtual components."""
 
-from PySide6.QtCore import QRectF, QTimer, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QRadialGradient
+from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QRadialGradient
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame,
-    QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QSpinBox, QToolButton, QVBoxLayout, QWidget,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 
 from rpi_sim_client.gpio import BCM_TO_BOARD
 
-from .board import COMPONENT_NAMES, I2C_ADDRESSES, I2C_DEFAULTS
+from .board import COMPONENT_NAMES, GPIO_DEVICES, I2C_ADDRESSES, I2C_DEFAULTS
+from .gpio_devices import DIGIT_PINS, SEGMENT_PINS
 
 
 class ComponentDialog(QDialog):
@@ -29,12 +30,35 @@ class ComponentDialog(QDialog):
         self.pin = QComboBox()
         self.green_pin = QComboBox()
         self.blue_pin = QComboBox()
-        for picker in (self.pin, self.green_pin, self.blue_pin):
+        self.echo_pin = QComboBox()
+        self.display_pins = QWidget()
+        grid = QGridLayout(self.display_pins)
+        grid.setContentsMargins(0, 0, 0, 0)
+        self.segments = [QComboBox() for _ in SEGMENT_PINS]
+        self.digits = [QComboBox() for _ in DIGIT_PINS]
+        for index, (label, picker) in enumerate(zip(("A", "B", "C", "D", "E", "F", "G", "DP", "D1", "D2", "D3", "D4"),
+                                                    self.segments + self.digits)):
+            row, column = divmod(index, 2)
+            caption = QLabel(label)
+            caption.setBuddy(picker)
+            picker.setAccessibleName(f"{'Segment' if index < 8 else 'Digit'} {label}")
+            grid.addWidget(caption, row, column * 2)
+            grid.addWidget(picker, row, column * 2 + 1)
+        display_pickers = self.segments + self.digits
+        for picker in (self.pin, self.green_pin, self.blue_pin, self.echo_pin, *display_pickers):
             for pin in sorted(free_pins):
                 picker.addItem(f"GPIO {pin} · pin {BCM_TO_BOARD[pin]}", pin)
         self.green_pin.setCurrentIndex(min(1, len(free_pins) - 1))
         self.blue_pin.setCurrentIndex(min(2, len(free_pins) - 1))
+        self.echo_pin.setCurrentIndex(min(1, len(free_pins) - 1))
+        preferred = (*SEGMENT_PINS, *DIGIT_PINS)
+        alternatives = iter(sorted(set(free_pins) - set(preferred)))
+        for picker, pin in zip(display_pickers, preferred):
+            pin = pin if pin in free_pins else next(alternatives, None)
+            picker.setCurrentIndex(picker.findData(pin))
         self.active_low = QCheckBox("Light when the output is LOW")
+        self.digit_active_low = QCheckBox("Enable a digit when its pin is LOW")
+        self.digit_active_low.setChecked(True)
         self.used_addresses = set(used_addresses)
         self.bus = QSpinBox()
         self.bus.setRange(0, 255)
@@ -45,7 +69,10 @@ class ComponentDialog(QDialog):
         form.addRow("GPIO pin", self.pin)
         form.addRow("Green pin", self.green_pin)
         form.addRow("Blue pin", self.blue_pin)
+        form.addRow("Echo pin", self.echo_pin)
+        form.addRow("Display pins", self.display_pins)
         form.addRow("Polarity", self.active_low)
+        form.addRow("Digit polarity", self.digit_active_low)
         form.addRow("I²C bus", self.bus)
         form.addRow("Address", self.address)
         self.pin_error = QLabel("Choose three different GPIO pins for an RGB LED.")
@@ -60,6 +87,12 @@ class ComponentDialog(QDialog):
             if component.kind == "rgb":
                 self.green_pin.setCurrentIndex(self.green_pin.findData(component.green_pin))
                 self.blue_pin.setCurrentIndex(self.blue_pin.findData(component.blue_pin))
+            elif component.kind == "ultrasonic":
+                self.echo_pin.setCurrentIndex(self.echo_pin.findData(component.echo_pin))
+            elif component.kind == "seven_segment":
+                for picker, pin in zip(display_pickers, component.pins):
+                    picker.setCurrentIndex(picker.findData(pin))
+                self.digit_active_low.setChecked(component.digit_active_low is not False)
             self.active_low.setChecked(component.active_low)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -71,7 +104,7 @@ class ComponentDialog(QDialog):
         self.kind.currentIndexChanged.connect(self._update_kind)
         self.bus.valueChanged.connect(self._update_addresses)
         self.address.currentIndexChanged.connect(self._validate_pins)
-        for picker in (self.pin, self.green_pin, self.blue_pin):
+        for picker in (self.pin, self.green_pin, self.blue_pin, self.echo_pin, *display_pickers):
             picker.currentIndexChanged.connect(self._validate_pins)
         self._update_kind()
         if component and component.kind in I2C_ADDRESSES:
@@ -81,12 +114,17 @@ class ComponentDialog(QDialog):
         kind = self.kind.currentData()
         self.name.setPlaceholderText(COMPONENT_NAMES[kind])
         rgb = kind == "rgb"
+        display = kind == "seven_segment"
+        ultrasonic = kind == "ultrasonic"
         i2c = kind in I2C_ADDRESSES
-        self.form.labelForField(self.pin).setText("Red pin" if rgb else "GPIO pin")
-        self.form.setRowVisible(self.pin, not i2c)
+        self.form.labelForField(self.pin).setText("Red pin" if rgb else ("Trigger pin" if ultrasonic else "GPIO pin"))
+        self.form.setRowVisible(self.pin, not i2c and not display)
         self.form.setRowVisible(self.green_pin, rgb)
         self.form.setRowVisible(self.blue_pin, rgb)
-        self.form.setRowVisible(self.active_low, kind in ("led", "rgb"))
+        self.form.setRowVisible(self.echo_pin, ultrasonic)
+        self.form.setRowVisible(self.display_pins, display)
+        self.form.setRowVisible(self.active_low, kind in ("led", "rgb", "seven_segment"))
+        self.form.setRowVisible(self.digit_active_low, display)
         self.form.setRowVisible(self.bus, i2c)
         self.form.setRowVisible(self.address, i2c)
         self._update_addresses()
@@ -113,6 +151,14 @@ class ComponentDialog(QDialog):
                 error = "All supported addresses are in use on this bus."
         elif kind == "rgb" and (None in pins or len(set(pins)) != 3):
             error = "Choose three different GPIO pins for an RGB LED."
+        elif kind == "seven_segment":
+            display = self._display_assignments()
+            if None in display or len(set(display)) != 12:
+                error = "Choose twelve different GPIO pins for the display."
+        elif kind == "ultrasonic":
+            echo = self.echo_pin.currentData()
+            if echo is None or pins[0] is None or echo == pins[0]:
+                error = "Choose different GPIO pins for Trigger and Echo."
         elif pins[0] is None:
             error = "All GPIO pins are in use."
         self.pin_error.setText(error)
@@ -123,13 +169,28 @@ class ComponentDialog(QDialog):
         kind = self.kind.currentData()
         is_i2c = kind in I2C_ADDRESSES
         return (
-            kind, None if is_i2c else self.pin.currentData(), self.name.text().strip(),
-            kind in ("led", "rgb") and self.active_low.isChecked(),
+            kind, None if is_i2c or kind == "seven_segment" else self.pin.currentData(), self.name.text().strip(),
+            kind in ("led", "rgb", "seven_segment") and self.active_low.isChecked(),
             self.green_pin.currentData() if kind == "rgb" else None,
             self.blue_pin.currentData() if kind == "rgb" else None,
             self.bus.value() if is_i2c else None,
             self.address.currentData() if is_i2c else None,
         )
+
+    def _display_assignments(self):
+        return tuple(picker.currentData() for picker in self.segments + self.digits)
+
+    def gpio_options(self):
+        kind = self.kind.currentData()
+        if kind == "ultrasonic":
+            return {"echo_pin": self.echo_pin.currentData()}
+        if kind == "seven_segment":
+            pins = self._display_assignments()
+            return {
+                "segment_pins": pins[:8], "digit_pins": pins[8:],
+                "digit_active_low": self.digit_active_low.isChecked(),
+            }
+        return {}
 
 
 class ComponentGlyph(QWidget):
@@ -292,11 +353,62 @@ class LCDDisplay(QWidget):
             painter.end()
 
 
+class SevenSegmentDisplay(QWidget):
+    # A–G, followed by the decimal point.
+    SHAPES = tuple(QPolygonF([QPointF(x, y) for x, y in points]) for points in (
+        ((8, 2), (37, 2), (41, 6), (36, 10), (9, 10), (5, 6)),
+        ((41, 8), (45, 12), (45, 28), (40, 32), (36, 28), (36, 13)),
+        ((40, 34), (45, 38), (45, 54), (41, 58), (36, 53), (36, 38)),
+        ((9, 55), (36, 55), (40, 60), (36, 64), (8, 64), (4, 60)),
+        ((4, 34), (8, 38), (8, 53), (4, 58), (0, 54), (0, 38)),
+        ((5, 8), (9, 13), (9, 28), (4, 32), (0, 28), (0, 12)),
+        ((9, 29), (36, 29), (40, 33), (36, 37), (9, 37), (4, 33)),
+    ))
+    CHARACTERS = dict(zip((0, 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F), " 0123456789"))
+
+    def __init__(self):
+        super().__init__()
+        self.masks = None
+        self.setMinimumHeight(86)
+        self.setAccessibleName("Four-digit display")
+        self.refresh((0, 0, 0, 0))
+
+    def refresh(self, masks):
+        if masks != self.masks:
+            self.masks = masks
+            self.setAccessibleDescription("".join(
+                self.CHARACTERS.get(mask & 0x7F, "?") + ("." if mask & 0x80 else "") for mask in masks
+            ))
+            self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#141925"))
+            painter.drawRoundedRect(QRectF(self.rect()), 7, 7)
+            scale = min((self.width() - 20) / 230, (self.height() - 20) / 64)
+            painter.translate((self.width() - 230 * scale) / 2, (self.height() - 64 * scale) / 2)
+            painter.scale(scale, scale)
+            for mask in self.masks:
+                for bit, shape in enumerate(self.SHAPES):
+                    painter.setBrush(QColor("#ff706b" if mask & (1 << bit) else "#4b3039"))
+                    painter.drawPolygon(shape)
+                painter.setBrush(QColor("#ff706b" if mask & 0x80 else "#4b3039"))
+                painter.drawEllipse(QRectF(47, 55, 8, 8))
+                painter.translate(58, 0)
+        finally:
+            painter.end()
+
+
 class ComponentCard(QFrame):
     edit = Signal(str)
     remove = Signal(str)
     interact = Signal(str, bool)
     motion_changed = Signal(str, tuple, tuple)
+    sensor_changed = Signal(str, tuple)
+    remote_pressed = Signal(str, str)
 
     def __init__(self, component, parent=None):
         super().__init__(parent)
@@ -326,6 +438,9 @@ class ComponentCard(QFrame):
 
         if component.kind in I2C_ADDRESSES:
             self._make_i2c_controls(layout)
+            return
+        if component.kind in GPIO_DEVICES:
+            self._make_gpio_controls(layout)
             return
 
         detail = QHBoxLayout()
@@ -363,6 +478,109 @@ class ComponentCard(QFrame):
             else:
                 self.action.clicked.connect(lambda: self.interact.emit(component.id, True))
             layout.addWidget(self.action)
+
+    def _make_gpio_controls(self, layout):
+        component = self.component
+        kind = component.kind
+        if kind == "seven_segment":
+            self.screen = SevenSegmentDisplay()
+            layout.addWidget(self.screen)
+            pins = QLabel(
+                "A–G, DP  " + " · ".join(map(str, component.segment_pins))
+                + "\nD1–D4  " + " · ".join(map(str, component.digit_pins))
+            )
+            pins.setObjectName("muted")
+            pins.setWordWrap(True)
+            pins.setToolTip("BCM GPIO assignments")
+            layout.addWidget(pins)
+            layout.addStretch()
+            return
+
+        pin_text = f"GPIO {component.pin}"
+        if kind == "ultrasonic":
+            pin_text = f"Trigger GPIO {component.pin} · Echo GPIO {component.echo_pin}"
+        pins = QLabel(pin_text)
+        pins.setObjectName("muted")
+        pins.setWordWrap(True)
+        layout.addWidget(pins)
+        if kind == "ir":
+            self.state = QLabel()
+            self.state.setObjectName("muted")
+            layout.addWidget(self.state)
+            grid = QGridLayout()
+            grid.setSpacing(4)
+            self.remote_buttons = {}
+            keys = (
+                (None, "UP", None), ("LEFT", "OK", "RIGHT"), (None, "DOWN", None),
+                ("1", "2", "3"), ("4", "5", "6"), ("7", "8", "9"), ("*", "0", "#"),
+            )
+            for row, keys_in_row in enumerate(keys):
+                for column, key in enumerate(keys_in_row):
+                    if key is not None:
+                        button = QPushButton(key)
+                        button.setAccessibleName(f"Send {key}")
+                        button.clicked.connect(lambda _checked=False, name=key: self.remote_pressed.emit(component.id, name))
+                        grid.addWidget(button, row, column)
+                        self.remote_buttons[key] = button
+            layout.addLayout(grid)
+            return
+
+        inputs = QFormLayout()
+        inputs.setSpacing(6)
+        if kind == "dht11":
+            self.temperature = QDoubleSpinBox()
+            self.temperature.setRange(0, 50)
+            self.temperature.setDecimals(1)
+            self.temperature.setSuffix(" °C")
+            self.humidity = QSpinBox()
+            self.humidity.setRange(0, 100)
+            self.humidity.setSuffix(" %")
+            inputs.addRow("Temperature", self.temperature)
+            inputs.addRow("Humidity", self.humidity)
+            self.temperature.setKeyboardTracking(False)
+            self.humidity.setKeyboardTracking(False)
+            self.temperature.valueChanged.connect(self._send_sensor_values)
+            self.humidity.valueChanged.connect(self._send_sensor_values)
+        else:
+            self.distance = QDoubleSpinBox()
+            self.distance.setRange(2, 400)
+            self.distance.setDecimals(1)
+            self.distance.setSuffix(" cm")
+            self.distance.setKeyboardTracking(False)
+            self.no_echo = QCheckBox("No echo")
+            self.distance.valueChanged.connect(self._send_sensor_values)
+            self.no_echo.toggled.connect(self._send_sensor_values)
+            inputs.addRow("Distance", self.distance)
+            inputs.addRow(self.no_echo)
+        layout.addLayout(inputs)
+        layout.addStretch()
+
+    def _send_sensor_values(self):
+        values = (
+            (self.temperature.value(), self.humidity.value()) if self.component.kind == "dht11"
+            else (self.distance.value(), self.no_echo.isChecked())
+        )
+        self.sensor_changed.emit(self.component.id, values)
+
+    def _refresh_gpio_device(self, board):
+        kind = self.component.kind
+        device = board.gpio_devices[self.component.id]
+        if kind == "seven_segment":
+            self.screen.refresh(board.display_segments(self.component.id))
+        elif kind == "ir":
+            self.state.setText(f"Last key  {device.last_key or '—'}")
+        elif kind == "dht11":
+            for control, value in ((self.temperature, device.temperature), (self.humidity, device.humidity)):
+                blocked = control.blockSignals(True)
+                control.setValue(value)
+                control.blockSignals(blocked)
+        else:
+            blocked = self.distance.blockSignals(True)
+            self.distance.setValue(device.distance)
+            self.distance.blockSignals(blocked)
+            blocked = self.no_echo.blockSignals(True)
+            self.no_echo.setChecked(device.no_echo)
+            self.no_echo.blockSignals(blocked)
 
     def _make_i2c_controls(self, layout):
         component = self.component
@@ -409,6 +627,9 @@ class ComponentCard(QFrame):
     def refresh(self, board):
         component = self.component
         kind = component.kind
+        if kind in GPIO_DEVICES:
+            self._refresh_gpio_device(board)
+            return
         if kind == "lcd":
             self.screen.refresh(board.i2c_device(component))
             return

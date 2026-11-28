@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "dht",
+      "kind": "dht11",
+      "pin": 17,
+      "name": "DHT11",
+      "active_low": false
+    }
+  ]
+}

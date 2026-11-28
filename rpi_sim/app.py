@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QIODevice, QSaveFile, QTimer, Qt
+from PySide6.QtCore import QIODevice, QSaveFile, QSettings, QTimer, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
@@ -16,7 +16,7 @@ from rpi_sim_client.gpio import BCM_TO_BOARD
 from rpi_sim_client.protocol import HOST
 
 from .audio import BuzzerAudio
-from .board import COMPONENT_NAMES, I2C_ADDRESSES, Board, Component, layout_json, load_layout
+from .board import COMPONENT_NAMES, I2C_ADDRESSES, Board, Component, layout_json, load_layout, parse_layout
 from .process import ScriptProcess
 from .server import GPIOServer
 from .session import BoardSession
@@ -38,15 +38,20 @@ class SimulatorWindow(QMainWindow):
         self.resize(1090, 680)
         self.setMinimumSize(820, 530)
         self.python = sys.executable
+        self.settings = QSettings(
+            QSettings.Format.IniFormat, QSettings.Scope.UserScope, "rpi-sim", "RPi Simulator", self
+        )
         self.layout_path = None
         self.cards = {}
         self.pulse_timers = {}
         self.i2c_updates = set()
         self.i2c_repaint = QTimer(self, singleShot=True, interval=16)
         self.i2c_repaint.timeout.connect(self._refresh_i2c)
+        self.display_repaint = QTimer(self, interval=33)
+        self.display_repaint.timeout.connect(self._refresh_displays)
         self.audio = BuzzerAudio(self)
         self.audio.failed.connect(lambda message: self._append_console(f"\n[Buzzer: {message}]\n"))
-        self.board = Board(self._update_pin, self._send_edge, self._update_i2c)
+        self.board = Board(self._update_pin, self._send_edge, self._update_i2c, self._send_pulses)
         self.session = BoardSession(self.board)
         self.runner = ScriptProcess(self.session, self)
         self.runner.console_output.connect(self._append_console)
@@ -68,7 +73,8 @@ class SimulatorWindow(QMainWindow):
         workbench.addWidget(self._console_panel())
         workbench.setSizes([570, 430])
         root.addWidget(workbench, 1)
-        self._load_demo()
+        self._restore_layout()
+        self.script.editingFinished.connect(self._remember_layout)
         self._show_run_status("Idle")
         if self.server.start():
             self.connection_label.setText(f"{HOST}:{self.server.listener.serverPort()}")
@@ -215,9 +221,11 @@ class SimulatorWindow(QMainWindow):
             card.remove.connect(self._remove_component)
             card.interact.connect(self._interact)
             card.motion_changed.connect(self.board.set_motion)
+            card.sensor_changed.connect(self._configure_sensor)
+            card.remote_pressed.connect(self.board.press_remote)
             card.refresh(self.board)
             card.menu_button.setEnabled(not self.session.busy)
-            key = component.id if component.kind in I2C_ADDRESSES else component.pin
+            key = component.id if component.pin is None else component.pin
             self.cards[key] = card
             self.grid.addWidget(card, index // 2, index % 2)
         if not self.cards:
@@ -228,6 +236,11 @@ class SimulatorWindow(QMainWindow):
         self.component_count.setText(str(len(self.cards)))
         self.add_button.setEnabled(not self.session.busy)
         self._update_audio()
+        if any(card.component.kind == "seven_segment" for card in self.cards.values()):
+            self.display_repaint.start()
+        else:
+            self.display_repaint.stop()
+        self._remember_layout()
 
     def _available_pins(self, except_id=None):
         return set(BCM_TO_BOARD) - {
@@ -252,7 +265,10 @@ class SimulatorWindow(QMainWindow):
             while name in labels:
                 name = f"{label} {number}"
                 number += 1
-        component = Component(component_id or uuid4().hex, kind, pin, name, active_low, green_pin, blue_pin, bus, address)
+        component = Component(
+            component_id or uuid4().hex, kind, pin, name, active_low, green_pin, blue_pin, bus, address,
+            **dialog.gpio_options(),
+        )
         self.board.put_component(component)
         self._redraw_components()
 
@@ -281,10 +297,18 @@ class SimulatorWindow(QMainWindow):
     def _update_pin(self, pin):
         component = self.board.component_at(pin)
         card = self.cards.get(component.pin) if component else None
-        if card:
+        if card and component.kind not in ("dht11", "ultrasonic"):
             card.refresh(self.board)
         if component and component.kind == "buzzer":
             self._update_audio()
+
+    def _configure_sensor(self, component_id, values):
+        self.board.gpio_devices[component_id].configure(*values)
+
+    def _refresh_displays(self):
+        for card in self.cards.values():
+            if card.component.kind == "seven_segment":
+                card.refresh(self.board)
 
     def _update_audio(self):
         self.audio.set_tones({
@@ -306,6 +330,9 @@ class SimulatorWindow(QMainWindow):
     def _send_edge(self, channel, registration):
         self.session.send_edge(channel, registration)
 
+    def _send_pulses(self, pin, pulses, delay):
+        self.session.send_pulses(pin, pulses, delay)
+
     def _replace_layout(self, components, path=None):
         self.board.replace_components(components)
         for timer in self.pulse_timers.values():
@@ -315,15 +342,33 @@ class SimulatorWindow(QMainWindow):
         self.layout_path = path
         self._redraw_components()
 
+    def _remember_layout(self):
+        self.settings.setValue("workspace/layout", layout_json(self.board.components.values()))
+        self.settings.setValue("workspace/layoutPath", self.layout_path or "")
+        self.settings.setValue("workspace/scriptPath", self.script.text())
+
+    def _restore_layout(self):
+        snapshot = self.settings.value("workspace/layout", "", type=str)
+        try:
+            components = parse_layout(snapshot)
+        except ValueError:
+            self._load_demo()
+            return
+        path = self.settings.value("workspace/layoutPath", "", type=str)
+        self.script.setText(self.settings.value("workspace/scriptPath", "", type=str))
+        self._replace_layout(components, path or None)
+
     def _load_demo(self):
-        self._replace_layout(DEMO_COMPONENTS)
         self.script.setText(str(PROJECT / "examples" / "motion_lights.py"))
+        self._replace_layout(DEMO_COMPONENTS)
 
     def _new_layout(self):
         self._replace_layout([])
 
     def _open_layout(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open layout", "", "Layout files (*.json);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open layout", self.layout_path or "", "Layout files (*.json);;All files (*)"
+        )
         if path and not self.session.busy:
             try:
                 self._replace_layout(load_layout(path), path)
@@ -341,11 +386,13 @@ class SimulatorWindow(QMainWindow):
                 QMessageBox.warning(self, "Could not save layout", output.errorString())
                 return
             self.layout_path = path
+            self._remember_layout()
 
     def _browse_script(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select Python script", self.script.text(), "Python scripts (*.py)")
         if path:
             self.script.setText(path)
+            self._remember_layout()
 
     def _select_python(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select Python interpreter", self.python)
@@ -403,6 +450,8 @@ class SimulatorWindow(QMainWindow):
             self.console_input.clear()
 
     def closeEvent(self, event):
+        self._remember_layout()
+        self.settings.sync()
         self.audio.stop()
         self.server.close()
         self.runner.close()

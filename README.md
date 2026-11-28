@@ -2,6 +2,12 @@
 
 Run Python GPIO and I²C exercises on a virtual Raspberry Pi board. Assign GPIO pins to lights, buzzers, displays, buttons, and sensors. Add LCD1602 displays and MPU6050 sensors by I²C bus and address.
 
+## Disclaimer
+
+ChatGPT (Codex) wrote the original code for this project, including the simulator, client libraries, and tests. Bundled exercises and device drivers include existing code copied or adapted from course materials and upstream projects. Their original attribution and licensing terms still apply.
+
+The original project code is available under the [MIT License](LICENSE).
+
 ## Run
 
 From this directory, use Python 3.10 or newer.
